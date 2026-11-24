@@ -1,0 +1,40 @@
+[package]
+name = "cornix"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+v4_0 = []
+
+[dependencies]
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-rp = { version = "0.10", features = [
+    "rp2040",
+    "time-driver",
+    "critical-section-impl",
+    "boot2-w25q080",
+    "unstable-pac",
+] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+embassy-usb = { version = "0.6", default-features = false }
+embassy-futures = "0.1"
+smart-leds = "0.4"
+embedded-io-async = "0.7"
+pio = "0.3"
+fixed = "1"
+static_cell = "2"
+portable-atomic = { version = "1", features = ["critical-section"] }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "1"
+
+[profile.dev]
+debug = 2
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = 2

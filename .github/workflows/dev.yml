@@ -1,0 +1,67 @@
+name: Development
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '.envrc'
+      - '.gitignore'
+      - 'LICENSE'
+      - 'README.md'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.target }}-${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+        target: [ thumbv6m-none-eabi ]
+        toolchain: [ stable ]
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Setup Rust Toolchain
+      uses: hecrj/setup-rust-action@v2
+      with:
+        rust-version: ${{ matrix.toolchain }}
+        targets: ${{ matrix.target }}
+        components: rustfmt, clippy
+
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: ${{ matrix.os }}-${{ matrix.target }}-${{ matrix.toolchain }}
+
+    - name: Format Check
+      run: cargo fmt --check
+
+    - name: Clippy Check (v4.1)
+      run: cargo clippy --release -j4 -- -D warnings
+
+    - name: Clippy Check (v4.0 fallback)
+      run: cargo clippy --release -j4 --features v4_0 -- -D warnings
+
+    - name: Build (v4.1 default)
+      run: cargo build --release -j4
+
+    - name: Build (v4.0 fallback)
+      run: cargo build --release -j4 --features v4_0
+
+  nix-build:
+    name: Nix Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v32
+      - name: Build v4.1 firmware (default)
+        run: nix run .#uf2
+
+      - name: Build v4.0 fallback firmware
+        run: nix run .#uf2-v40
