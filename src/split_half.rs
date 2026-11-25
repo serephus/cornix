@@ -19,6 +19,7 @@ const START1: u8 = 0x55;
 const TYPE_POLL: u8 = 1;
 const TYPE_RESP: u8 = 2;
 const MAX_PAYLOAD: usize = 32;
+const POLL_FLAG_LEDS: u8 = 1;
 
 bind_interrupts!(struct Pio1Irqs {
     PIO1_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO1>;
@@ -193,29 +194,46 @@ pub async fn central_poll_task(
     events: &'static Channel<CriticalSectionRawMutex, KeyEvent, 16>,
 ) -> ! {
     let mut last_leds = [0u8; KEY_LED_COUNT];
+    let mut led_gen = 0u8;
+    let mut acked_led = u8::MAX;
     let mut ack = 0u16;
 
     loop {
+        let mut changed = false;
         while let Ok(next) = leds.try_receive() {
-            last_leds = next;
+            if next != last_leds {
+                last_leds = next;
+                changed = true;
+            }
+        }
+        if changed {
+            led_gen = led_gen.wrapping_add(1);
         }
 
         let mut payload = [0u8; 4 + KEY_LED_COUNT];
-        payload[0..2].copy_from_slice(&0u16.to_le_bytes());
-        payload[2..4].copy_from_slice(&ack.to_le_bytes());
-        payload[4..].copy_from_slice(&last_leds);
+        payload[0..2].copy_from_slice(&ack.to_le_bytes());
+        payload[2] = led_gen;
+        let include_leds = led_gen != acked_led;
+        payload[3] = if include_leds { POLL_FLAG_LEDS } else { 0 };
+        let payload_len = if include_leds {
+            payload[4..].copy_from_slice(&last_leds);
+            4 + KEY_LED_COUNT
+        } else {
+            4
+        };
 
-        hd.send_frame(TYPE_POLL, &payload).await;
+        hd.send_frame(TYPE_POLL, &payload[..payload_len]).await;
 
         if let Some(frame) = hd.recv_frame(TYPE_RESP, Duration::from_millis(30)).await
-            && frame.len >= 3
+            && frame.len >= 4
         {
             let seq = u16::from_le_bytes([frame.data[0], frame.data[1]]);
             let count = frame.data[2] as usize;
-            if seq != ack && frame.len >= 3 + count * 2 {
+            acked_led = frame.data[3];
+            if seq != ack && frame.len >= 4 + count * 2 {
                 for index in 0..count {
-                    let key = frame.data[3 + index * 2];
-                    let pressed = frame.data[4 + index * 2] != 0;
+                    let key = frame.data[4 + index * 2];
+                    let pressed = frame.data[5 + index * 2] != 0;
                     events.send(KeyEvent { key, pressed }).await;
                 }
                 ack = seq;
@@ -232,21 +250,27 @@ pub async fn peripheral_poll_task(
     leds: &'static Channel<CriticalSectionRawMutex, [u8; KEY_LED_COUNT], 4>,
     events: &'static Channel<CriticalSectionRawMutex, KeyEvent, 16>,
 ) -> ! {
-    let mut in_flight = [0u8; 3 + 16];
+    let mut in_flight = [0u8; 4 + 16];
     let mut in_flight_len = 0usize;
     let mut in_flight_seq = 0u16;
     let mut waiting_ack = false;
+    let mut last_led_gen = u8::MAX;
 
     loop {
         let Some(frame) = hd.recv_frame(TYPE_POLL, Duration::from_millis(50)).await else {
             continue;
         };
 
-        if frame.len >= 4 + KEY_LED_COUNT {
-            let ack = u16::from_le_bytes([frame.data[2], frame.data[3]]);
-            let mut frame_leds = [0u8; KEY_LED_COUNT];
-            frame_leds.copy_from_slice(&frame.data[4..4 + KEY_LED_COUNT]);
-            leds.try_send(frame_leds).ok();
+        if frame.len >= 4 {
+            let ack = u16::from_le_bytes([frame.data[0], frame.data[1]]);
+            let led_gen = frame.data[2];
+            let flags = frame.data[3];
+            if flags & POLL_FLAG_LEDS != 0 && frame.len >= 4 + KEY_LED_COUNT {
+                let mut frame_leds = [0u8; KEY_LED_COUNT];
+                frame_leds.copy_from_slice(&frame.data[4..4 + KEY_LED_COUNT]);
+                last_led_gen = led_gen;
+                leds.try_send(frame_leds).ok();
+            }
 
             if waiting_ack && ack == in_flight_seq {
                 waiting_ack = false;
@@ -257,22 +281,24 @@ pub async fn peripheral_poll_task(
         Timer::after_micros(HALF_DUPLEX_TURNAROUND_US).await;
 
         if waiting_ack {
+            in_flight[3] = last_led_gen;
             hd.send_frame(TYPE_RESP, &in_flight[..in_flight_len]).await;
         } else {
             let mut count = 0usize;
             in_flight[0..2].copy_from_slice(&in_flight_seq.wrapping_add(1).to_le_bytes());
             while count < 8 {
                 if let Ok(event) = events.try_receive() {
-                    in_flight[3 + count * 2] = event.key;
-                    in_flight[4 + count * 2] = event.pressed as u8;
+                    in_flight[4 + count * 2] = event.key;
+                    in_flight[5 + count * 2] = event.pressed as u8;
                     count += 1;
                 } else {
                     break;
                 }
             }
             in_flight[2] = count as u8;
+            in_flight[3] = last_led_gen;
             in_flight_seq = in_flight_seq.wrapping_add(1);
-            in_flight_len = 3 + count * 2;
+            in_flight_len = 4 + count * 2;
             waiting_ack = true;
             hd.send_frame(TYPE_RESP, &in_flight[..in_flight_len]).await;
         }
