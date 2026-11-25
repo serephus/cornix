@@ -127,7 +127,7 @@
           }:
           pkgs.writeShellApplication {
             inherit name;
-            runtimeInputs = [ rust ];
+            runtimeInputs = [ rust pkgs.stdenv.cc ];
             text = ''
               if [ ! -f Cargo.toml ] || [ ! -f src/keymap.rs ]; then
                 echo "run this from the cornix repository root" >&2
@@ -146,6 +146,7 @@
             inherit name;
             runtimeInputs = [
               rust
+              pkgs.stdenv.cc
               pkgs.elf2uf2-rs
             ];
             text = ''
