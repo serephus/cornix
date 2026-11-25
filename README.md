@@ -3,6 +3,7 @@
 Small from-scratch Rust firmware for the Corne v4.1 (RP2040).
 
 - One UF2 for both halves; on v4.1 either half can be the main board.
+- v4.1 split LED data is sent only when it changes; ordinary polls stay small.
 - 42 keys; the 4 extra keys are ignored.
 - Static Norman keymap in `src/keymap.rs`.
 - Per-key backlight scaled by lifetime key frequency.
